@@ -9,7 +9,11 @@ import datetime
 import os
 from collections import namedtuple
 
-import torch
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except (ImportError, NameError, AttributeError):
+    TORCH_AVAILABLE = False
 
 PY3 = sys.version_info >= (3, 0)
 
@@ -40,15 +44,15 @@ def run(command):
     output, err = p.communicate()
     rc = p.returncode
     if PY3:
-        output = output.decode("ascii")
-        err = err.decode("ascii")
+        output = output.decode("utf-8")
+        err = err.decode("utf-8")
     return rc, output.strip(), err.strip()
 
 
 def run_and_read_all(run_lambda, command):
     """Runs command using run_lambda; reads and returns entire output if rc is 0"""
     rc, out, _ = run_lambda(command)
-    if rc is not 0:
+    if rc != 0:
         return None
     return out
 
@@ -56,7 +60,7 @@ def run_and_read_all(run_lambda, command):
 def run_and_parse_first_match(run_lambda, command, regex):
     """Runs command using run_lambda, returns the first regex match if it exists"""
     rc, out, _ = run_lambda(command)
-    if rc is not 0:
+    if rc != 0:
         return None
     match = re.search(regex, out)
     if match is None:
@@ -66,9 +70,9 @@ def run_and_parse_first_match(run_lambda, command, regex):
 
 def get_conda_packages(run_lambda):
     if get_platform() == 'win32':
-        grep_cmd = r'findstr /R "torch soumith"'
+        grep_cmd = r'findstr /R "torch soumith mkl magma"'
     else:
-        grep_cmd = r'grep "torch\|soumith"'
+        grep_cmd = r'grep "torch\|soumith\|mkl\|magma"'
     out = run_and_read_all(run_lambda, 'conda list | ' + grep_cmd)
     if out is None:
         return out
@@ -94,7 +98,7 @@ def get_gpu_info(run_lambda):
     smi = get_nvidia_smi()
     uuid_regex = re.compile(r' \(UUID: .+?\)')
     rc, out, _ = run_lambda(smi + ' -L')
-    if rc is not 0:
+    if rc != 0:
         return None
     # Anonymize GPUs by removing their UUID
     return re.sub(uuid_regex, '', out)
@@ -161,7 +165,7 @@ def check_release_file(run_lambda):
 def get_os(run_lambda):
     platform = get_platform()
 
-    if platform is 'win32' or platform is 'cygwin':
+    if platform == 'win32' or platform == 'cygwin':
         return get_windows_version(run_lambda)
 
     if platform == 'darwin':
@@ -194,7 +198,7 @@ def get_pip_packages(run_lambda):
             grep_cmd = r'findstr /R "numpy torch"'
         else:
             grep_cmd = r'grep "torch\|numpy"'
-        return run_and_read_all(run_lambda, pip + ' list --format=legacy | ' + grep_cmd)
+        return run_and_read_all(run_lambda, pip + ' list --format=freeze | ' + grep_cmd)
 
     if not PY3:
         return 'pip', run_with_pip('pip')
@@ -204,7 +208,7 @@ def get_pip_packages(run_lambda):
     out3 = run_with_pip('pip3')
 
     num_pips = len([x for x in [out2, out3] if x is not None])
-    if num_pips is 0:
+    if num_pips == 0:
         return 'pip', out2
 
     if num_pips == 1:
@@ -221,12 +225,20 @@ def get_env_info():
     run_lambda = run
     pip_version, pip_list_output = get_pip_packages(run_lambda)
 
+    if TORCH_AVAILABLE:
+        version_str = torch.__version__
+        debug_mode_str = torch.version.debug
+        cuda_available_str = torch.cuda.is_available()
+        cuda_version_str = torch.version.cuda
+    else:
+        version_str = debug_mode_str = cuda_available_str = cuda_version_str = 'N/A'
+
     return SystemEnv(
-        torch_version=torch.__version__,
-        is_debug_build=torch.version.debug,
+        torch_version=version_str,
+        is_debug_build=debug_mode_str,
         python_version='{}.{}'.format(sys.version_info[0], sys.version_info[1]),
-        is_cuda_available=torch.cuda.is_available(),
-        cuda_compiled_version=torch.version.cuda,
+        is_cuda_available=cuda_available_str,
+        cuda_compiled_version=cuda_version_str,
         cuda_runtime_version=get_running_cuda_version(run_lambda),
         nvidia_gpu_models=get_gpu_info(run_lambda),
         nvidia_driver_version=get_nvidia_driver_version(run_lambda),
@@ -308,7 +320,7 @@ def pretty_str(envinfo):
     all_cuda_fields = dynamic_cuda_fields + ['cudnn_version']
     all_dynamic_cuda_fields_missing = all(
         mutable_dict[field] is None for field in dynamic_cuda_fields)
-    if not torch.cuda.is_available() and all_dynamic_cuda_fields_missing:
+    if TORCH_AVAILABLE and not torch.cuda.is_available() and all_dynamic_cuda_fields_missing:
         for field in all_cuda_fields:
             mutable_dict[field] = 'No CUDA'
         if envinfo.cuda_compiled_version is None:

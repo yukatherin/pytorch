@@ -5,7 +5,7 @@
 #include <ATen/Context.h>
 #include <c10/core/ScalarType.h>
 #include <ATen/core/TensorMethods.h>
-#include <ATen/core/TensorOptions.h>
+#include <c10/core/TensorOptions.h>
 
 #include <array>
 #include <functional>
@@ -27,7 +27,7 @@ namespace native {
 
 inline Tensor from_blob(
     void* data,
-    IntList sizes,
+    IntArrayRef sizes,
     const std::function<void(void*)>& deleter,
     const TensorOptions& options = {}) {
   return at::getType(options).tensorFromBlob(data, sizes, deleter);
@@ -35,8 +35,8 @@ inline Tensor from_blob(
 
 inline Tensor from_blob(
     void* data,
-    IntList sizes,
-    IntList strides,
+    IntArrayRef sizes,
+    IntArrayRef strides,
     const std::function<void(void*)>& deleter,
     const TensorOptions& options = {}) {
   return at::getType(options).tensorFromBlob(data, sizes, strides, deleter);

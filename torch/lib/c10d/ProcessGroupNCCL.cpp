@@ -1,13 +1,13 @@
-#include "ProcessGroupNCCL.hpp"
+#include <c10d/ProcessGroupNCCL.hpp>
 
 #include <map>
 #include <tuple>
 #include <unordered_set>
 
-#include <THC.h>
+#include <THC/THC.h>
 
 #include <ATen/cuda/CUDAContext.h>
-#include <ATen/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAGuard.h>
 
 #include <c10d/Utils.hpp>
 
@@ -370,7 +370,7 @@ std::shared_ptr<ProcessGroup::Work> ProcessGroupNCCL::allreduce(
   at::cuda::OptionalCUDAGuard gpuGuard;
 
   std::unique_lock<std::mutex> cudaFreeMutexLock(
-      *(THCCachingAllocator_getCudaFreeMutex()));
+      *(c10::cuda::CUDACachingAllocator::getFreeMutex()));
 
   C10D_NCCL_CHECK(ncclGroupStart());
 
@@ -417,7 +417,7 @@ std::shared_ptr<ProcessGroup::Work> ProcessGroupNCCL::broadcast(
   at::cuda::OptionalCUDAGuard gpuGuard;
 
   std::unique_lock<std::mutex> cudaFreeMutexLock(
-      *(THCCachingAllocator_getCudaFreeMutex()));
+      *(c10::cuda::CUDACachingAllocator::getFreeMutex()));
 
   C10D_NCCL_CHECK(ncclGroupStart());
 
@@ -465,7 +465,7 @@ std::shared_ptr<ProcessGroup::Work> ProcessGroupNCCL::reduce(
   at::cuda::OptionalCUDAGuard gpuGuard;
 
   std::unique_lock<std::mutex> cudaFreeMutexLock(
-      *(THCCachingAllocator_getCudaFreeMutex()));
+      *(c10::cuda::CUDACachingAllocator::getFreeMutex()));
 
   C10D_NCCL_CHECK(ncclGroupStart());
 
@@ -534,7 +534,7 @@ std::shared_ptr<ProcessGroup::Work> ProcessGroupNCCL::allgather(
   at::cuda::OptionalCUDAGuard gpuGuard;
 
   std::unique_lock<std::mutex> cudaFreeMutexLock(
-      *(THCCachingAllocator_getCudaFreeMutex()));
+      *(c10::cuda::CUDACachingAllocator::getFreeMutex()));
 
   C10D_NCCL_CHECK(ncclGroupStart());
 

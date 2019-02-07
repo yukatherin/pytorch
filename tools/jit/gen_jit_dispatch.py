@@ -50,14 +50,16 @@ TYPE_MAP = {
     # since TensorList is a ArrayRef in arguments but a vector
     # in returns
     'std::vector<Tensor>': 'Tensor[]',
-    'IntList': 'int[]',
+    'IntArrayRef': 'int[]',
     'Layout': 'Layout',
     'Device': 'Device',
     'ScalarType': 'ScalarType',
+    'ScalarType?': 'ScalarType?',
     'int64_t': 'int',
+    'int64_t?': 'int?',
     'double': 'float',
     'bool': 'bool',
-    'Generator': 'Generator',
+    'Generator': 'Generator?',
 }
 
 
@@ -79,21 +81,23 @@ def jit_type_of(arg):
 # that type
 FROM_IVALUE = {
     'Device': '{}.toDevice()',
-    'IntList': '{}.toIntList()->elements()',
+    'IntArrayRef': '{}.toIntList()->elements()',
     'Layout': '{}.toLayout()',
     'Scalar': '{}.toScalar()',
     'Scalar?': '{}.toOptional<Scalar>()',
     'ScalarType': '{}.toScalarType()',
+    'ScalarType?': '{}.toOptional<ScalarType>()',
     'Tensor': '{}.toTensor()',
     'TensorList': '{}.toTensorList()->elements()',
     'bool': '{}.toBool()',
     'double': '{}.toDouble()',
     'int64_t': '{}.toInt()',
+    'int64_t?': '{}.toOptional<int64_t>()',
     'std::string': '{}.toString()->string()',
     'Generator': 'nullptr',
-    'std::array<bool,2>': 'as_bool_array<2>({}.toIntList()->elements())',
-    'std::array<bool,3>': 'as_bool_array<3>({}.toIntList()->elements())',
-    'std::array<bool,4>': 'as_bool_array<4>({}.toIntList()->elements())',
+    'std::array<bool,2>': 'as_bool_array<2>({}.toBoolListRef())',
+    'std::array<bool,3>': 'as_bool_array<3>({}.toBoolListRef())',
+    'std::array<bool,4>': 'as_bool_array<4>({}.toBoolListRef())',
 }
 
 
@@ -182,8 +186,8 @@ def is_tensor_arg(arg):
 
 
 def is_sized_intlist_arg(arg):
-    """Returns True for arguments declared as IntList[k], but False for IntList."""
-    return (arg['simple_type'] == 'IntList') and ('size' in arg)
+    """Returns True for arguments declared as IntArrayRef[k], but False for IntArrayRef."""
+    return (arg['simple_type'] == 'IntArrayRef') and ('size' in arg)
 
 
 def base_name(decl):
@@ -330,7 +334,7 @@ def gen_jit_dispatch(declarations, out, template_path):
             {'name': 'dtype', 'simple_type': 'ScalarType', 'default': 'float', 'kwarg_only': True},
             # layout is specified as an int64_t of at::Layout
             {'name': 'layout', 'simple_type': 'Layout', 'default': 'strided', 'kwarg_only': True},
-            # device is specified as an IntList of { at::Device::Type, device_id }
+            # device is specified as an IntArrayRef of { at::Device::Type, device_id }
             {'name': 'device', 'simple_type': 'Device', 'kwarg_only': True,
                 'default': '\\"cpu\\"'},
         ]
@@ -439,7 +443,18 @@ def signature(decl):
     else:
         ret_list = '({})'.format(', '.join(jit_type_of(r) for r in decl['returns']))
     name = decl['name'] if not is_out_variant(decl) else decl['name'][:-4]
-    return 'aten::{}({}) -> {}'.format(name, arg_list, ret_list)
+    constructed_string = 'aten::{}({}) -> {}'.format(name, arg_list, ret_list)
+    # If matches_jit_signature has been specified the signature constructed from the
+    # declared attributes should match the raw string passed through. In the
+    # case of native_functions.yaml, func should match the generated signature,
+    # if matches_jit_signature is true. This is used to track and verify the alignment
+    # of native_function.yaml's function schema with that used in this parse.
+    if decl.get('matches_jit_signature'):
+        assert(constructed_string == decl['schema_string']), \
+            decl['schema_string'] + ' is flagged as JIT signature compliant' + \
+            ', but does not match the signature ' + constructed_string
+        return decl['schema_string']
+    return constructed_string
 
 
 def main():

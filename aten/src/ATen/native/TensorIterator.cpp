@@ -6,19 +6,6 @@
 
 namespace at {
 
-struct DimCounter {
-  DimCounter(IntList shape, Range range);
-
-  void increment(const std::array<int64_t, 2>& step);
-  bool is_done() const;
-  std::array<int64_t, 2> max_step() const;
-
-  IntList shape;
-  Range range;
-  DimVector values;
-  int64_t offset;
-};
-
 using DimMask = TensorIterator::DimMask;
 using PtrVector = TensorIterator::PtrVector;
 using loop_t = TensorIterator::loop_t;
@@ -115,6 +102,13 @@ void TensorIterator::compute_types() {
             type.device_type() == kCUDA && op.tensor.type().device_type() == kCPU) {
           // don't cast CPU scalars in CUDA ops that directly support them
           op.type = &op.tensor.type();
+        } else if (promote_gpu_output_dtypes_ && op.tensor.defined() &&
+            !op.is_output && op.tensor.type().scalarType() == kHalf &&
+            type.scalarType() == kFloat && type.device_type() == kCUDA &&
+            op.tensor.type().device_type() == kCUDA) {
+          // allow input tensor type upcasting for fp16 to fp32 in fused kernel
+          // on GPU
+          op.type = &op.tensor.type();
         } else {
           op.type = &type;
         }
@@ -126,11 +120,11 @@ void TensorIterator::compute_types() {
     if (op.tensor.defined() && op.tensor.type() != *op.type) {
       if (op.is_output) {
         AT_ERROR("output with type ", op.tensor.type().toString(),
-                 " doesn't match the desired type ", type().toString());
+                 " doesn't match the desired type ", op.type->toString());
       } else if (op.tensor.dim() == 0) {
         op.tensor = op.tensor.to(*op.type);
       } else {
-        AT_ERROR("expected type ", type().toString(), " but got ",
+        AT_ERROR("expected type ", op.type->toString(), " but got ",
             op.tensor.type().toString());
       }
     }
@@ -171,7 +165,7 @@ DimVector TensorIterator::compatible_stride(int element_size) const {
   return stride;
 }
 
-DimVector TensorIterator::invert_perm(IntList input) const {
+DimVector TensorIterator::invert_perm(IntArrayRef input) const {
   // Invert the permutation caused by reorder_dimensions. This is not valid
   // after coalesce_dimensions is called.
   AT_ASSERT(!has_coalesced_dimensions_);
@@ -270,7 +264,7 @@ DimVector TensorIterator::get_dim_strides(int dim) const {
   return inner_strides;
 }
 
-SmallVector<char*, 4> TensorIterator::get_data_ptrs(ArrayRef<char*> base, IntList counter) const {
+SmallVector<char*, 4> TensorIterator::get_data_ptrs(ArrayRef<char*> base, IntArrayRef counter) const {
   auto ptrs = SmallVector<char*, 4>(base);
   for (int dim = 0; dim < ndim(); dim++) {
     int64_t value = counter[dim];
@@ -298,10 +292,10 @@ bool TensorIterator::is_dim_reduced(int dim) const {
   return false;
 }
 
-void TensorIterator::permute_dimensions(IntList perm) {
+void TensorIterator::permute_dimensions(IntArrayRef perm) {
   AT_ASSERT(perm.size() == ndim());
 
-  auto reorder = [perm](IntList data) {
+  auto reorder = [perm](IntArrayRef data) {
     auto res = DimVector(data.size(), 0);
     for (size_t i = 0; i < perm.size(); i++) {
       res[i] = data[perm[i]];
@@ -338,7 +332,7 @@ int TensorIterator::num_reduce_dims() const {
   return count;
 }
 static loop2d_t loop_wrapper(const loop_t& loop) {
-  return [loop](int ntensor, char** base, const int64_t* strides, int64_t size0, int64_t size1) {
+  return [&loop](int ntensor, char** base, const int64_t* strides, int64_t size0, int64_t size1) {
     auto data = PtrVector(base, base + ntensor);
     const int64_t* outer_strides = &strides[ntensor];
 
@@ -385,6 +379,9 @@ void TensorIterator::serial_for_each(const loop_t& loop, Range range) const {
 }
 
 void TensorIterator::serial_for_each(const loop2d_t& loop, Range range) const {
+  if (range.size() == 0) {
+    return;
+  }
   auto strides = get_strides();
   while (strides.size() < 2 * ntensors()) {
     strides.push_back(0);
@@ -398,7 +395,7 @@ void TensorIterator::serial_for_each(const loop2d_t& loop, Range range) const {
     auto counter = DimCounter(shape_, range);
     while (!counter.is_done()) {
       auto ptrs = get_data_ptrs(base_ptrs, counter.values);
-      auto step = counter.max_step();
+      auto step = counter.max_2d_step();
       loop(ntensors(), ptrs.data(), strides.data(), step[0], step[1]);
       counter.increment(step);
     }
@@ -432,7 +429,7 @@ void TensorIterator::remove_operand(int arg) {
   operands_.erase(operands_.begin() + arg);
 }
 
-void TensorIterator::replace_operand(int arg, void* data, IntList stride) {
+void TensorIterator::replace_operand(int arg, void* data, IntArrayRef stride) {
   operands_[arg].data = data;
   operands_[arg].stride_bytes = stride;
 }
@@ -456,6 +453,16 @@ void TensorIterator::narrow(int dim, int64_t start, int64_t size) {
   }
 }
 
+void TensorIterator::select_all_keeping_dim(int start_dim, IntArrayRef indices) {
+  AT_ASSERT(start_dim <= ndim());
+  for (int i = start_dim; i < ndim(); ++i) {
+    for (auto& op : operands_) {
+      op.data = ((char*)op.data) + op.stride_bytes[i] * indices[i - start_dim];
+    }
+    shape_[i] = 1;
+  }
+}
+
 std::unique_ptr<TensorIterator> TensorIterator::binary_op(Tensor& out, const Tensor& a, const Tensor& b) {
   auto builder = TensorIterator::Builder();
   if (a.device().is_cuda() && b.device().is_cuda()) {
@@ -475,6 +482,7 @@ std::unique_ptr<TensorIterator> TensorIterator::reduce_op(Tensor& out, const Ten
   auto builder = TensorIterator::Builder();
   builder.add_output(out);
   builder.add_input(a);
+  builder.iter_->promote_gpu_output_dtypes_ = true;
   builder.iter_->resize_outputs_ = false;
   builder.iter_->is_reduction_ = true;
   return builder.build();
@@ -534,7 +542,7 @@ void TensorIterator::compute_shape() {
   }
 }
 
-static DimVector compute_stride(const Tensor& tensor, IntList shape) {
+static DimVector compute_stride(const Tensor& tensor, IntArrayRef shape) {
   int ndim = shape.size();
   auto original_shape = tensor.sizes();
   auto original_stride = tensor.strides();
@@ -585,6 +593,7 @@ std::unique_ptr<TensorIterator> TensorIterator::split(int dim) {
   auto copy_size = shape_[dim] / 2;
   auto this_size = shape_[dim] - copy_size;
   copy->narrow(dim, 0, copy_size);
+  copy->final_output_ &= !overlaps;
   this->narrow(dim, copy_size, this_size);
   this->accumulate_ |= overlaps;
 
@@ -668,7 +677,7 @@ SplitUntil32Bit::iterator SplitUntil32Bit::end() const {
   return SplitUntil32Bit::iterator();
 }
 
-DimCounter::DimCounter(IntList shape, Range range)
+DimCounter::DimCounter(IntArrayRef shape, Range range)
   : shape(shape)
   , range(range)
   , values(shape.size(), 0)
@@ -677,8 +686,10 @@ DimCounter::DimCounter(IntList shape, Range range)
   int64_t ndim = values.size();
   for (int dim = 0; dim < ndim; dim++) {
     int64_t size = shape[dim];
-    values[dim] = linear_offset % size;
-    linear_offset /= size;
+    if (size > 0) {
+      values[dim] = linear_offset % size;
+      linear_offset /= size;
+    }
   }
   AT_ASSERT(linear_offset == 0);
 }
@@ -713,7 +724,7 @@ void DimCounter::increment(const std::array<int64_t, 2>& step) {
   AT_ASSERT(overflow == 0 || overflow == 1);
 }
 
-std::array<int64_t, 2> DimCounter::max_step() const {
+std::array<int64_t, 2> DimCounter::max_2d_step() const {
   int64_t step0 = std::min(shape[0] - values[0], range.end - offset);
   int64_t step1 = 1;
   if (step0 == shape[0] && shape.size() >= 1) {

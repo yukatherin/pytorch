@@ -7,6 +7,7 @@
 #include <thread>
 #include <utility>
 
+#include <c10/util/Optional.h>
 #include <c10/util/intrusive_ptr.h>
 
 namespace c10 {
@@ -53,7 +54,7 @@ class CAFFE2_API ThreadPool : public c10::TaskThreadPoolBase {
   std::mutex mutex_;
   std::condition_variable condition_;
   std::condition_variable completed_;
-  bool running_;
+  std::atomic_bool running_;
   bool complete_;
   std::size_t available_;
   std::size_t total_;
@@ -62,7 +63,9 @@ class CAFFE2_API ThreadPool : public c10::TaskThreadPoolBase {
  public:
   ThreadPool() = delete;
 
-  explicit ThreadPool(std::size_t pool_size, int numa_node_id = -1);
+  explicit ThreadPool(
+      std::size_t pool_size,
+      int numa_node_id = -1);
 
   ~ThreadPool();
 
@@ -89,9 +92,6 @@ class CAFFE2_API ThreadPool : public c10::TaskThreadPoolBase {
   /// @brief Wait for queue to be empty
   void waitWorkComplete();
 
-  // @brief Wait for the specific future to finish in the queue
-  void workOnTasksUntilCompleted(c10::intrusive_ptr<ivalue::Future> future);
-
  protected:
   virtual void init_thread() {}
 
@@ -99,6 +99,8 @@ class CAFFE2_API ThreadPool : public c10::TaskThreadPoolBase {
   // @brief Entry point for pool threads.
   void main_loop(std::size_t index);
 };
+
+CAFFE2_API void setNumThreads(size_t v);
 
 CAFFE2_API ThreadPool& global_work_queue();
 

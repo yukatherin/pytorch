@@ -6,6 +6,9 @@ from torch.cuda.comm import broadcast_coalesced
 from torch.cuda import nccl
 import torch.distributed as dist
 
+if dist.is_available():
+    from torch.distributed.distributed_c10d import _get_default_group
+
 from ..modules import Module
 from .replicate import replicate
 from .scatter_gather import scatter_kwargs, gather
@@ -23,9 +26,7 @@ class DistributedDataParallel(Module):
     each such replica handles a portion of the input. During the backwards
     pass, gradients from each node are averaged.
 
-    The batch size should be larger than the number of GPUs used locally. It
-    should also be an integer multiple of the number of GPUs so that each chunk
-    is the same size (so that each GPU processes the same number of samples).
+    The batch size should be larger than the number of GPUs used locally.
 
     See also: :ref:`distributed-basics` and :ref:`cuda-nn-dataparallel-instead`.
     The same constraints on input as in :class:`torch.nn.DataParallel` apply.
@@ -56,7 +57,7 @@ class DistributedDataParallel(Module):
     parallel training.
 
     Here is how to use it: on each host with N GPUs, you should spawn up N
-    processes, while ensuring that each process invidually works on a single GPU
+    processes, while ensuring that each process individually works on a single GPU
     from 0 to N-1. Therefore, it is your job to ensure that your training script
     operates on a single given GPU by calling:
 
@@ -75,6 +76,13 @@ class DistributedDataParallel(Module):
         highly recommended backend to be used with Multi-Process Single-GPU
         distributed training and this applies to both single-node and multi-node
         distributed training
+
+    .. note:: This module also supports mixed-precision distributed training.
+        This means that your model can have different types of parameters such
+        as mixed types of fp16 and fp32, the gradient reduction on these
+        mixed types of parameters will just work fine.
+        Also note that ``nccl`` backend is currently the fastest and highly
+        recommended backend for fp16/fp32 mixed-precision training.
 
     .. warning::
         This module works only with the ``gloo`` and ``nccl`` backends.
@@ -186,7 +194,7 @@ class DistributedDataParallel(Module):
             output_device = device_ids[0]
 
         if process_group is None:
-            self.process_group = dist.get_default_group()
+            self.process_group = _get_default_group()
         else:
             self.process_group = process_group
 
@@ -308,14 +316,15 @@ class DistributedDataParallel(Module):
 
     def __setstate__(self, state):
         # If serializable, then the process group should be the default one
-        self.process_group = dist.get_default_group()
+        self.process_group = _get_default_group()
+        self.check_previous_reduction = False
         super(DistributedDataParallel, self).__setstate__(state)
         self._ddp_init_helper()
 
     def _check_default_group(self):
         pickle_not_supported = False
         try:
-            if self.process_group != dist.get_default_group():
+            if self.process_group != _get_default_group():
                 pickle_not_supported = True
         except RuntimeError:
             pickle_not_supported = True

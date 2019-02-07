@@ -1,7 +1,7 @@
 #pragma once
 
-#include "ATen/Parallel.h"
-#include "ATen/TensorUtils.h"
+#include <ATen/Parallel.h>
+#include <ATen/TensorUtils.h>
 #include <limits>
 #include <utility>
 #include <cstring>
@@ -127,7 +127,7 @@ inline std::pair<int64_t, int64_t> collapse_dims(
  */
 
 inline Tensor sort_strides(Tensor& tensor_) {
-  IntList strides = tensor_.strides();
+  IntArrayRef strides = tensor_.strides();
   std::vector<int64_t> indices;
   indices.reserve(tensor_.ndimension());
   for (int64_t i = 0; i < tensor_.ndimension(); i++) {

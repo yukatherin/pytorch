@@ -52,6 +52,7 @@
 
 #include <ATen/ATen.h>
 #include <ATen/NativeFunctions.h>
+#include <ATen/LegacyTHFunctions.h>
 #include <ATen/ExpandUtils.h>
 #include <ATen/native/TensorIterator.h>
 
@@ -300,7 +301,7 @@ struct AdvancedIndex {
 // values and the stride of src. The new shape is not meaningful. It's used to make
 // the shape compatible with the result tensor.
 static Tensor restride_src(const Tensor& src, int64_t dims_before, int64_t dims_indexed,
-                           IntList replacement_shape) {
+                           IntArrayRef replacement_shape) {
   auto shape = DimVector(src.sizes());
   auto strides = DimVector(src.strides());
   int64_t end = dims_before + dims_indexed;
@@ -326,7 +327,7 @@ AdvancedIndex::AdvancedIndex(const Tensor& src, TensorList indices_list)
 {
   int64_t element_size_bytes = src.type().elementSizeInBytes();
   int dims_before = 0, dims_after = 0, dims_indexed = 0;
-  IntList replacement_shape;
+  IntArrayRef replacement_shape;
   for (size_t dim = 0; dim < indices_list.size(); dim++) {
     if (!indices_list[dim].defined()) {
       if (dims_indexed == 0) {
@@ -493,7 +494,7 @@ Tensor & index_copy_(Tensor & self, int64_t dim, const Tensor & index, const Ten
           "index_copy_(): Number of indices (", numIndices, ") should be equal to source.size(dim) (", source.size(dim), ")");
   }
 
-  return at::_th_index_copy_(self, dim, index, source);
+  return at::legacy::th::_th_index_copy_(self, dim, index, source);
 }
 
 }} // at::native

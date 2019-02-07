@@ -20,7 +20,7 @@ struct Variable;
 using at::Context;
 using at::Device;
 using at::Generator;
-using at::IntList;
+using at::IntArrayRef;
 using at::Scalar;
 using at::ScalarType;
 using at::SparseTensorRef;
@@ -38,8 +38,6 @@ struct TORCH_API VariableType final : public at::TypeDefault {
   at::Backend backend() const override;
   at::Allocator* allocator() const override;
   at::Device getDeviceFromPtr(void * data) const override;
-  Storage storage(bool resizable = false) const override;
-  Storage storage(size_t size, bool resizable = false) const override;
   Storage storageFromBlob(void * data, int64_t size, const std::function<void(void*)> & deleter) const override;
   Storage storageWithAllocator(int64_t size, at::Allocator* allocator) const override;
   std::unique_ptr<at::Generator> generator() const override;

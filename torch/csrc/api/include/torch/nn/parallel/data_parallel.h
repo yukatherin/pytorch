@@ -6,12 +6,14 @@
 #include <torch/types.h>
 
 #include <torch/csrc/autograd/functions/comm.h>
+#ifdef USE_CUDA
 #include <torch/csrc/cuda/comm.h>
-#include <torch/csrc/utils/functional.h>
+#endif
+#include <ATen/core/functional.h>
 
 #include <ATen/Device.h>
 #include <ATen/Parallel.h>
-#include <ATen/core/TensorOptions.h>
+#include <c10/core/TensorOptions.h>
 #include <c10/util/Exception.h>
 
 #include <cstddef>

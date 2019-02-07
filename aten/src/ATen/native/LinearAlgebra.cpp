@@ -1,10 +1,11 @@
-#include "ATen/ATen.h"
-#include "ATen/ExpandUtils.h"
-#include "ATen/Dispatch.h"
-#include "ATen/NativeFunctions.h"
-#include "ATen/native/LinearAlgebraUtils.h"
-#include "ATen/TensorUtils.h"
-#include "ATen/Parallel.h"
+#include <ATen/ATen.h>
+#include <ATen/ExpandUtils.h>
+#include <ATen/Dispatch.h>
+#include <ATen/NativeFunctions.h>
+#include <ATen/LegacyTHFunctions.h>
+#include <ATen/native/LinearAlgebraUtils.h>
+#include <ATen/TensorUtils.h>
+#include <ATen/Parallel.h>
 #include <functional>
 #include <numeric>
 #include <vector>
@@ -141,70 +142,70 @@ static void check_1d(const Tensor& t, const char* arg, const char* fn) {
 Tensor ger(const Tensor& self, const Tensor& vec2) {
   check_1d(self, "self", "ger");
   check_1d(vec2, "vec2", "ger");
-  return at::_th_ger(self, vec2);
+  return at::legacy::th::_th_ger(self, vec2);
 }
 
 Tensor& ger_out(Tensor& result, const Tensor& self, const Tensor& vec2) {
   check_1d(self, "self", "ger");
   check_1d(vec2, "vec2", "ger");
-  return at::_th_ger_out(result, self, vec2);
+  return at::legacy::th::_th_ger_out(result, self, vec2);
 }
 
 Tensor mm(const Tensor& self, const Tensor& mat2) {
   if (self.is_sparse()) {
     return mat2.type().addmm(at::zeros({}, mat2.type()), self, mat2, 0, 1);
   }
-  return at::_th_mm(self, mat2);
+  return at::legacy::th::_th_mm(self, mat2);
 }
 
 Tensor& mm_out(Tensor& result, const Tensor& self, const Tensor& mat2) {
   if (self.is_sparse()) {
     return at::addmm_out(result, at::zeros({}, mat2.options()), self, mat2, 0, 1);
   }
-  return at::_th_mm_out(result, self, mat2);
+  return at::legacy::th::_th_mm_out(result, self, mat2);
 }
 
 Tensor mv(const Tensor& self, const Tensor& vec) {
   check_1d(vec, "vec", "mv");
-  return at::_th_mv(self, vec);
+  return at::legacy::th::_th_mv(self, vec);
 }
 
 Tensor& mv_out(Tensor& result, const Tensor& self, const Tensor& vec) {
   check_1d(vec, "vec", "mv");
-  return at::_th_mv_out(result, self, vec);
+  return at::legacy::th::_th_mv_out(result, self, vec);
 }
 
 Tensor addmv(const Tensor& self, const Tensor& mat, const Tensor& vec, Scalar beta, Scalar alpha) {
   check_1d(vec, "vec", "addmv");
-  return at::_th_addmv(self, mat, vec, beta, alpha);
+  return at::legacy::th::_th_addmv(self, mat, vec, beta, alpha);
 }
 
 Tensor& addmv_(Tensor& self, const Tensor& mat, const Tensor& vec, Scalar beta, Scalar alpha) {
   check_1d(vec, "vec", "addmv");
-  return at::_th_addmv_(self, mat, vec, beta, alpha);
+  return at::legacy::th::_th_addmv_(self, mat, vec, beta, alpha);
 }
 
 Tensor& addmv_out(Tensor &result, const Tensor& self, const Tensor& mat, const Tensor& vec, Scalar beta, Scalar alpha) {
   check_1d(vec, "vec", "addmv");
-  return at::_th_addmv_out(result, self, mat, vec, beta, alpha);
+  return at::legacy::th::_th_addmv_out(result, self, mat, vec, beta, alpha);
 }
 
 Tensor addr(const Tensor& self, const Tensor& vec1, const Tensor& vec2, Scalar beta, Scalar alpha) {
   check_1d(vec1, "vec1", "addr");
   check_1d(vec2, "vec2", "addr");
-  return at::_th_addr(self, vec1, vec2, beta, alpha);
+  return at::legacy::th::_th_addr(self, vec1, vec2, beta, alpha);
 }
 
 Tensor& addr_(Tensor& self, const Tensor& vec1, const Tensor& vec2, Scalar beta, Scalar alpha) {
   check_1d(vec1, "vec1", "addr");
   check_1d(vec2, "vec2", "addr");
-  return at::_th_addr_(self, vec1, vec2, beta, alpha);
+  return at::legacy::th::_th_addr_(self, vec1, vec2, beta, alpha);
 }
 
 Tensor& addr_out(Tensor &result, const Tensor& self, const Tensor& vec1, const Tensor& vec2, Scalar beta, Scalar alpha) {
   check_1d(vec1, "vec1", "addr");
   check_1d(vec2, "vec2", "addr");
-  return at::_th_addr_out(result, self, vec1, vec2, beta, alpha);
+  return at::legacy::th::_th_addr_out(result, self, vec1, vec2, beta, alpha);
 }
 
 template <typename scalar_t, bool is_bmm>
@@ -358,7 +359,7 @@ Tensor& bmm_out_cpu(Tensor &result, const Tensor& batch1, const Tensor& batch2) 
 Tensor dot(const Tensor& self, const Tensor& tensor) {
   check_1d(self, "self", "dot");
   check_1d(tensor, "tensor", "dot");
-  return at::_th_dot(self, tensor);
+  return at::legacy::th::_th_dot(self, tensor);
 }
 
 Tensor& dot_out(Tensor& result, const Tensor& self, const Tensor& tensor) {
@@ -427,10 +428,10 @@ Tensor matmul(
     // we track m1 vs m2 separately even though they must match for nicer error messages
     int64_t n = dim_tensor1 > 1 ? tensor1.size(-2) : 1;
     int64_t m1 = tensor1.size(-1);
-    IntList batch_tensor1(tensor1.sizes().data(), std::max<int64_t>(dim_tensor1 - 2, 0));
+    IntArrayRef batch_tensor1(tensor1.sizes().data(), std::max<int64_t>(dim_tensor1 - 2, 0));
     int64_t m2 = dim_tensor2 > 1 ? tensor2.size(-2) : 1;
     int64_t p = tensor2.size(-1);
-    IntList batch_tensor2(tensor2.sizes().data(), std::max<int64_t>(dim_tensor2 - 2, 0));
+    IntArrayRef batch_tensor2(tensor2.sizes().data(), std::max<int64_t>(dim_tensor2 - 2, 0));
 
     // expand the batch portion (i.e. cut off matrix dimensions and expand rest)
     std::vector<int64_t> expand_batch_portion = infer_size(batch_tensor1, batch_tensor2);
@@ -524,14 +525,14 @@ Tensor frobenius_norm(const Tensor& self) {
   return at::norm(self);
 }
 
-Tensor frobenius_norm(const Tensor& self, IntList dim, bool keepdim) {
+Tensor frobenius_norm(const Tensor& self, IntArrayRef dim, bool keepdim) {
   AT_CHECK(
       dim.size() <= 2,
       "Expected at most 2 dimensions, but got ",
       dim.size(),
       " dimensions instead.");
   if (dim.size() == 1) {
-    return at::norm(self, 2, dim[0], keepdim);
+    return at::norm(self, 2, dim, keepdim, self.type().scalarType());
   }
   return at::sqrt(at::sum(self * self, dim, keepdim));
 }
@@ -539,7 +540,7 @@ Tensor frobenius_norm(const Tensor& self, IntList dim, bool keepdim) {
 Tensor &frobenius_norm_out(
     Tensor& result,
     const Tensor& self,
-    IntList dim,
+    IntArrayRef dim,
     bool keepdim) {
   AT_CHECK(
       dim.size() <= 2,
@@ -547,7 +548,7 @@ Tensor &frobenius_norm_out(
       dim.size(),
       " dimensions instead.");
   if (dim.size() == 1) {
-    return at::norm_out(result, self, 2, dim[0], keepdim);
+    return at::norm_out(result, self, 2, dim, keepdim, self.type().scalarType());
   }
   return at::sqrt_out(result, at::sum(self * self, dim, keepdim));
 }

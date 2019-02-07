@@ -97,16 +97,13 @@ if (USE_GLOO)
 endif()
 
 target_include_directories(c10d PUBLIC
-  ${CMAKE_SOURCE_DIR}/aten/src/TH # provides "THAllocator.h" to THCGeneral.h
-  ${CMAKE_SOURCE_DIR}/aten/src/THC # provides "THC.h" to ProcessGroupGloo.cpp
   ${CMAKE_BINARY_DIR}/aten/src # provides "ATen/TypeExtendedInterface.h" to ATen.h
   ${CMAKE_BINARY_DIR}/caffe2/aten/src # provides <TH/THGeneral.h> to THC.h
-  ${CMAKE_BINARY_DIR}/caffe2/aten/src/THC # provides "THCGeneral.h" to THC.h
   )
 
 # For <c10d/...>
 target_include_directories(c10d PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
-# For torch/csrc/utils/hash.h and torch/csrc/utils/functional.h
+# For torch/csrc/utils/hash.h
 target_include_directories(c10d PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../../..)
 
 if(USE_C10D_NCCL)
@@ -138,10 +135,7 @@ endif()
 
 target_link_libraries(c10d PUBLIC ${C10D_LIBS})
 
-install(TARGETS c10d
-  RUNTIME DESTINATION bin
-  LIBRARY DESTINATION lib
-  ARCHIVE DESTINATION lib)
+install(TARGETS c10d DESTINATION lib)
 
 option(BUILD_EXAMPLES "Build examples" OFF)
 if(BUILD_EXAMPLES)

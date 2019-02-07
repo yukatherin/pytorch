@@ -89,7 +89,7 @@ class CreateMapOp final : public Operator<Context> {
     CAFFE_THROW(
         "CreateMap is not implemented on value tensor of type ",
         DataTypeToTypeMeta(value_dtype).name(),
-        "Consider adding it a type in the list DispatchHelper");
+        "consider adding it as a type in the DispatchHelper list");
   }
 
   OUTPUT_TAGS(MAP);
@@ -140,7 +140,7 @@ class KeyValueToMapOp final : public Operator<Context> {
     CAFFE_THROW(
         "KeyValueToMap is not implemented on value tensor of type ",
         Input(VALUES).dtype().name(),
-        "Consider adding it a type in the list DispatchHelper");
+        "consider adding it as a type in the DispatchHelper list");
   }
 
   INPUT_TAGS(KEYS, VALUES);
@@ -245,9 +245,8 @@ class MapDeserializer : public BlobDeserializerBase {
         tensor_protos.ParseFromString(proto.content()),
         "Fail to parse TensorProtos");
     TensorDeserializer deser;
-    Tensor key_tensor(CPU), value_tensor(CPU);
-    deser.Deserialize(tensor_protos.protos(0), &key_tensor);
-    deser.Deserialize(tensor_protos.protos(1), &value_tensor);
+    Tensor key_tensor = deser.Deserialize(tensor_protos.protos(0));
+    Tensor value_tensor = deser.Deserialize(tensor_protos.protos(1));
     auto* key_data = key_tensor.data<KEY_T>();
     auto* value_data = value_tensor.data<VALUE_T>();
 

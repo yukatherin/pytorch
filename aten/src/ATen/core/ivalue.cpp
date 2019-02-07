@@ -28,6 +28,23 @@ std::ostream& printList(std::ostream & out, const List &v,
   return out;
 }
 
+template<typename Dict>
+std::ostream& printDict(std::ostream& out, const Dict& v) {
+  out << "{";
+
+  bool first = true;
+  for (const auto& pair : v->elements()) {
+    if (!first) {
+      out << ", ";
+    }
+    out << pair.first << ": " << pair.second;
+    first = false;
+  }
+
+  out << "}";
+  return out;
+}
+
 } // anonymous namespace
 
 std::ostream& operator<<(std::ostream & out, const IValue & v) {
@@ -67,17 +84,23 @@ std::ostream& operator<<(std::ostream & out, const IValue & v) {
     case IValue::Tag::TensorList:
       return printList(out, v.toTensorList(), "[", "]");
     case IValue::Tag::Blob:
-      return out << v.toBlob();
+      return out << *v.toBlob();
     case IValue::Tag::GenericList:
       return printList(out, v.toGenericList(), "[", "]");
     case IValue::Tag::Future:
       return out << "Future";
     case IValue::Tag::Device:
       return out << v.toDevice();
+    case IValue::Tag::GenericDict:
+      return printDict(out, v.toGenericDict());
   }
   AT_ERROR("Tag not found\n");
 }
 
 #undef TORCH_FORALL_TAGS
+
+void IValue::dump() const {
+  std::cout << *this << "\n";
+}
 
 } // namespace c10

@@ -253,8 +253,7 @@ class StmtBuilder(Builder):
     @staticmethod
     def build_Return(ctx, stmt):
         r = ctx.make_range(stmt.lineno, stmt.col_offset, stmt.col_offset + len("return"))
-        values = (stmt.value,) if not isinstance(stmt.value, ast.Tuple) else stmt.value.elts
-        return Return(r, [build_expr(ctx, val) for val in values if val is not None])
+        return Return(r, None if stmt.value is None else build_expr(ctx, stmt.value))
 
     @staticmethod
     def build_Raise(ctx, stmt):
@@ -543,6 +542,11 @@ class ExprBuilder(Builder):
     def build_Tuple(ctx, expr):
         return TupleLiteral(ctx.make_range(expr.lineno, expr.col_offset, expr.col_offset + 1),
                             [build_expr(ctx, e) for e in expr.elts])
+
+    @staticmethod
+    def build_Dict(ctx, expr):
+        return DictLiteral(ctx.make_range(expr.lineno, expr.col_offset, expr.col_offset + 1),
+                           [build_expr(ctx, e) for e in expr.keys], [build_expr(ctx, e) for e in expr.values])
 
     @staticmethod
     def build_Num(ctx, expr):

@@ -1,19 +1,12 @@
 #ifndef TH_GENERIC_FILE
-#define TH_GENERIC_FILE "generic/THTensor.h"
+#define TH_GENERIC_FILE "TH/generic/THTensor.h"
 #else
 
 /* a la lua? dim, storageoffset, ...  et les methodes ? */
 
-#ifdef __cplusplus
-#include <ATen/core/TensorImpl.h>
-#endif
+#include <c10/core/TensorImpl.h>
 
-#ifdef __cplusplus
 #define THTensor at::TensorImpl
-#else
-typedef struct at_Tensor_Impl at_Tensor_Impl;
-#define THTensor at_Tensor_Impl
-#endif
 
 // These used to be distinct types; for some measure of backwards compatibility and documentation
 // alias these to the single THTensor type.
@@ -131,6 +124,10 @@ TH_API scalar_t THTensor_(get1d)(const THTensor *tensor, int64_t x0);
 TH_API scalar_t THTensor_(get2d)(const THTensor *tensor, int64_t x0, int64_t x1);
 TH_API scalar_t THTensor_(get3d)(const THTensor *tensor, int64_t x0, int64_t x1, int64_t x2);
 TH_API scalar_t THTensor_(get4d)(const THTensor *tensor, int64_t x0, int64_t x1, int64_t x2, int64_t x3);
+
+/* Shape manipulation methods */
+TH_API void THTensor_(cat)(THTensor *r_, THTensor *ta, THTensor *tb, int dimension);
+TH_API void THTensor_(catArray)(THTensor *result, THTensor **inputs, int numInputs, int dimension);
 
 /* Debug methods */
 TH_API THDescBuff THTensor_(desc)(const THTensor *tensor);

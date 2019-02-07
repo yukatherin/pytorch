@@ -1,14 +1,15 @@
 #pragma once
 
-#include <ATen/core/Scalar.h>
-#include <ATen/core/Tensor.h>
-#include <ATen/core/TensorImpl.h>
-#include <ATen/core/UndefinedTensorImpl.h>
+#include <condition_variable>
+#include <type_traits>
+
+#include <c10/core/Scalar.h>
+#include <c10/core/TensorImpl.h>
+#include <c10/core/UndefinedTensorImpl.h>
 #include <ATen/core/blob.h>
 #include <c10/util/intrusive_ptr.h>
-#include <ATen/core/thread_pool.h>
 
-#include <type_traits>
+#include <ATen/core/Tensor.h>
 
 namespace c10 {
 struct IValue;
@@ -38,7 +39,7 @@ struct CAFFE2_API ConstantString final : c10::intrusive_ptr_target {
 };
 
 template <typename Elem>
-struct C10_EXPORT List : c10::intrusive_ptr_target {
+struct CAFFE2_API List : c10::intrusive_ptr_target {
  private:
   std::vector<Elem> elements_;
 
@@ -64,9 +65,47 @@ struct C10_EXPORT List : c10::intrusive_ptr_target {
   }
 };
 
+struct DictHash {
+  size_t operator()(const IValue& ivalue) const;
+};
+
+struct DictEqualTo {
+  bool operator()(const IValue& lhs, const IValue& rhs) const;
+};
+
+template <typename Key, typename Value>
+using DictUnorderedMap = std::unordered_map<Key, Value, DictHash, DictEqualTo>;
+
+template <typename Key, typename Value>
+struct CAFFE2_API Dict : c10::intrusive_ptr_target {
+ private:
+  DictUnorderedMap<Key, Value> elements_;
+
+ public:
+  Dict(DictUnorderedMap<Key, Value> elements_)
+      : elements_(std::move(elements_)) {}
+  static c10::intrusive_ptr<Dict> create(
+      DictUnorderedMap<Key, Value> elements_) {
+    return c10::make_intrusive<Dict>(std::move(elements_));
+  }
+  const DictUnorderedMap<Key, Value>& elements() const {
+    return elements_;
+  }
+  operator const DictUnorderedMap<Key, Value>&() const {
+    return elements();
+  }
+
+  DictUnorderedMap<Key, Value>& elements() {
+    return elements_;
+  }
+  operator DictUnorderedMap<Key, Value>&() {
+    return elements();
+  }
+};
+
 struct Future;
 
-struct C10_EXPORT Tuple : public List<IValue> {
+struct CAFFE2_API Tuple : public List<IValue> {
   using List<IValue>::List;
   static c10::intrusive_ptr<Tuple> create(std::vector<IValue> elements_) {
     return c10::make_intrusive<Tuple>(std::move(elements_));
@@ -77,6 +116,8 @@ using TensorList = List<at::Tensor>;
 using DoubleList = List<double>;
 using BoolList = List<bool>;
 using GenericList = List<IValue>;
+using GenericDict = Dict<IValue, IValue>;
+
 
 }
 
@@ -101,6 +142,7 @@ using GenericList = List<IValue>;
   _(TensorList) \
   _(Blob) \
   _(GenericList) \
+  _(GenericDict) \
   _(Future) \
   _(Device)
 
@@ -133,11 +175,38 @@ struct CAFFE2_API IValue final {
     IValue(rhs).swap(*this);
     return *this;
   }
+
+  void dump() const;
+
+  bool isAliasOf(const IValue& rhs) const {
+    if (this->tag != rhs.tag) {
+      // Trivially don't alias if the type is different
+      return false;
+    }
+
+    if (!this->is_intrusive_ptr) {
+      // Primitive types don't alias anything
+      return false;
+    }
+
+    AT_ASSERT(rhs.is_intrusive_ptr);
+
+    // Tensors should be compared based on internal storage
+    if (this->isTensor()) {
+      const auto thisTensor = this->toTensor();
+      const auto rhsTensor = rhs.toTensor();
+      return thisTensor.is_alias_of(rhsTensor);
+    }
+
+    // Other types can be compared by their ptr value
+    return this->payload.as_intrusive_ptr == rhs.payload.as_intrusive_ptr;
+  }
   void swap(IValue & rhs) noexcept {
     std::swap(payload, rhs.payload);
     std::swap(is_intrusive_ptr, rhs.is_intrusive_ptr);
     std::swap(tag, rhs.tag);
   }
+
   // Accessors for subtypes are arranged together below
   // While some of these accessors could be generated through templates,
   // we prefer to write them manually for clarity
@@ -169,23 +238,22 @@ struct CAFFE2_API IValue final {
     return *this;
   }
 
-  IValue(caffe2::Blob blob) : tag(Tag::Blob), is_intrusive_ptr(true) {
+  IValue(intrusive_ptr<caffe2::Blob> blob)
+  : tag(Tag::Blob), is_intrusive_ptr(true) {
     // TODO (after Tensor merge) If we pass in a Blob holding a Tensor, extract
-    // and
-    //      store it as a Tensor instead.
-    payload.as_intrusive_ptr =
-        c10::make_intrusive<caffe2::Blob>(std::move(blob)).release();
+    // and store it as a Tensor instead.
+    payload.as_intrusive_ptr = blob.release();
   }
   bool isBlob() const {
     return Tag::Blob == tag;
   }
-  caffe2::Blob& toBlob() & {
+  c10::intrusive_ptr<caffe2::Blob> toBlob() && {
     AT_ASSERT(isBlob());
-    return *static_cast<caffe2::Blob*>(payload.as_intrusive_ptr);
+    return moveToIntrusivePtr<caffe2::Blob>();
   }
-  const caffe2::Blob& toBlob() const& {
+  c10::intrusive_ptr<caffe2::Blob> toBlob() const & {
     AT_ASSERT(isBlob());
-    return *static_cast<caffe2::Blob*>(payload.as_intrusive_ptr);
+    return toIntrusivePtr<caffe2::Blob>();;
   }
 
   // Tuple
@@ -271,6 +339,7 @@ struct CAFFE2_API IValue final {
   const std::vector<bool>& toBoolListRef() const;
   const std::vector<at::Tensor>& toTensorListRef() const;
   const std::vector<IValue>& toGenericListRef() const;
+  const ivalue::DictUnorderedMap<IValue, IValue>& toGenericDictRef() const;
   const std::string& toStringRef() const;
 
   // ConstantString
@@ -336,6 +405,19 @@ struct CAFFE2_API IValue final {
   c10::intrusive_ptr<ivalue::GenericList> toGenericList() const & {
     AT_ASSERT(isGenericList());
     return toIntrusivePtr<ivalue::GenericList>();
+  }
+
+  // GenericDict
+  IValue(c10::intrusive_ptr<ivalue::GenericDict> v);
+  IValue(ivalue::DictUnorderedMap<IValue, IValue> v);
+  bool isGenericDict() const { return Tag::GenericDict == tag; }
+  c10::intrusive_ptr<ivalue::GenericDict> toGenericDict() && {
+    AT_ASSERT(isGenericDict());
+    return moveToIntrusivePtr<ivalue::GenericDict>();
+  }
+  c10::intrusive_ptr<ivalue::GenericDict> toGenericDict() const & {
+    AT_ASSERT(isGenericDict());
+    return toIntrusivePtr<ivalue::GenericDict>();
   }
 
   // None
@@ -424,6 +506,10 @@ struct CAFFE2_API IValue final {
       std::ostream& out,
       const IValue& v);
 
+  bool isPtrType() const {
+    return is_intrusive_ptr;
+  }
+
  private:
   // NOTE: IValue tags are intentionally private. In the future we may encode
   // this value different (e.g. using NaN boxing), and this would make it more
@@ -481,14 +567,49 @@ struct C10_EXPORT ivalue::Future final : c10::intrusive_ptr_target {
   }
 
  public:
+  struct CAFFE2_API FutureError final : public std::exception {
+    FutureError(std::string&& error_msg_)
+        : error_msg(std::move(error_msg_)) {}
+
+    FutureError() = default;
+
+    const char* what() const noexcept override {
+      return error_msg.c_str();
+    }
+
+    std::string error_msg;
+  };
+
+  /**
+  * Wait on the future until it completes.
+  */
   void wait() {
     if (completed()) {
       return;
     }
-    c10::global_work_queue().workOnTasksUntilCompleted(intrusive_from_this());
+    std::condition_variable finished;
+    bool fired = false;
+
+    // Add a callback to notify the current thread
+    // when the current future completes.
+    addCallback([&] {
+      std::unique_lock<std::mutex> lock(mutex_);
+      finished.notify_all();
+      fired = true;
+    });
+
+    // The current thread will be blocked unless the above callback is fired.
+    std::unique_lock<std::mutex> lock(mutex_);
+    while (!fired) {
+      finished.wait(lock);
+    }
+
     AT_ASSERT(completed());
   }
 
+  /**
+   * Explicitly mark the future as completed with the output value.
+   */
   void markCompleted(IValue value) {
     {
       // This is not to protect completed_ but to create a barrier
@@ -499,21 +620,39 @@ struct C10_EXPORT ivalue::Future final : c10::intrusive_ptr_target {
       value_ = std::move(value);
     }
 
-    // There is no need to protect callbacks anymore.
-    // Once completed_ is set to true, no one can add new callback to the list.
-    for (auto& callback : callbacks) {
-      callback();
+    fireCallbacks();
+  }
+
+  void markCompleted(FutureError&& error_) {
+    {
+      // This is not to protect completed_ but to create a barrier
+      // from possible addCallback() calls
+      std::unique_lock<std::mutex> lock(mutex_);
+      AT_ASSERT(!completed());
+      completed_ = true;
+      has_error = true;
+      error = std::move(error_);
     }
-    callbacks.clear();
+
+    fireCallbacks();
   }
 
   // Get the result of the current future.
   IValue value() {
     std::unique_lock<std::mutex> lock(mutex_);
     AT_ASSERT(completed());
+    if (has_error) {
+      throw error;
+    }
     return value_;
   }
 
+  /**
+   * Add a callback to the future.
+   * The callbacks will be executed once the future completes.
+   * If the future has already completed,
+   * this function will execute the callback immediately.
+   */
   void addCallback(std::function<void(void)> callback) {
     std::unique_lock<std::mutex> lock(mutex_);
     if (completed()) {
@@ -529,23 +668,43 @@ struct C10_EXPORT ivalue::Future final : c10::intrusive_ptr_target {
     return completed_;
   }
 
-  std::mutex& get_mutex() {
-    return mutex_;
-  }
-
   CAFFE2_API friend std::ostream& operator<<(
       std::ostream& out,
       const Future& v);
 
  private:
+  void fireCallbacks() {
+    AT_ASSERT(completed());
+    // There is no need to protect callbacks with the lock.
+    // Once completed_ is set to true, no one can add new callback to the list.
+    for (auto& callback : callbacks) {
+      callback();
+    }
+    callbacks.clear();
+  }
+
   std::mutex mutex_;
   IValue value_; // when finished the value
   std::atomic_bool completed_ = {false}; // is this future complete
   std::vector<std::function<void(void)>> callbacks;
+  bool has_error = false;
+  FutureError error;
 };
 
 #undef TORCH_FORALL_TAGS
 
+namespace detail {
+
+struct _guarded_unsigned_long_unique_dummy final {
+  _guarded_unsigned_long_unique_dummy(int64_t){};
+};
+using _guarded_unsigned_long = c10::guts::conditional_t<
+    std::is_same<unsigned long, uint32_t>::value ||
+        std::is_same<unsigned long, uint64_t>::value,
+    _guarded_unsigned_long_unique_dummy,
+    unsigned long>;
+
+} // namespace detail
 
 #define DEFINE_TO(type, method_name) \
 template<> \
@@ -558,13 +717,25 @@ inline type IValue::to<type>() const & { \
 }
 DEFINE_TO(at::Tensor, toTensor)
 DEFINE_TO(c10::intrusive_ptr<ivalue::Tuple>, toTuple)
+DEFINE_TO(float, toDouble)
 DEFINE_TO(double, toDouble)
+DEFINE_TO(unsigned char, toInt)
+DEFINE_TO(signed char, toInt)
+DEFINE_TO(unsigned short, toInt)
+DEFINE_TO(short, toInt)
+DEFINE_TO(int, toInt)
+DEFINE_TO(uint32_t, toInt)
+DEFINE_TO(uint64_t, toInt)
+DEFINE_TO(detail::_guarded_unsigned_long, toInt)
 DEFINE_TO(int64_t, toInt)
 DEFINE_TO(bool, toBool)
+DEFINE_TO(c10::intrusive_ptr<caffe2::Blob>, toBlob);
 DEFINE_TO(c10::intrusive_ptr<ivalue::DoubleList>, toDoubleList)
 DEFINE_TO(c10::intrusive_ptr<ivalue::IntList>, toIntList)
+DEFINE_TO(c10::intrusive_ptr<ivalue::BoolList>, toBoolList)
 DEFINE_TO(c10::intrusive_ptr<ivalue::TensorList>, toTensorList)
 DEFINE_TO(c10::intrusive_ptr<ivalue::GenericList>, toGenericList)
+DEFINE_TO(c10::intrusive_ptr<ivalue::GenericDict>, toGenericDict)
 DEFINE_TO(c10::intrusive_ptr<ivalue::ConstantString>, toString)
 DEFINE_TO(at::Scalar, toScalar)
 DEFINE_TO(std::vector<int64_t>, toIntListRef)
@@ -630,6 +801,13 @@ inline IValue::IValue(c10::intrusive_ptr<ivalue::GenericList> v)
 inline IValue::IValue(std::vector<IValue> v)
 : IValue(ivalue::GenericList::create(std::move(v))) {}
 
+inline IValue::IValue(c10::intrusive_ptr<ivalue::GenericDict> v)
+: tag(Tag::GenericDict), is_intrusive_ptr(true) {
+  payload.as_intrusive_ptr = v.release();
+}
+inline IValue::IValue(ivalue::DictUnorderedMap<IValue, IValue> v)
+: IValue(ivalue::GenericDict::create(std::move(v))) {}
+
 inline IValue::IValue(c10::intrusive_ptr<ivalue::Future> v)
 : tag(Tag::Future), is_intrusive_ptr(true) {
   payload.as_intrusive_ptr = v.release();
@@ -653,6 +831,11 @@ inline const std::vector<bool>& IValue::toBoolListRef() const {
 
 inline const std::vector<IValue>& IValue::toGenericListRef() const {
   return toGenericList()->elements();
+}
+
+inline const c10::ivalue::DictUnorderedMap<IValue, IValue>& IValue::
+    toGenericDictRef() const {
+  return toGenericDict()->elements();
 }
 
 inline const std::string& IValue::toStringRef() const {
@@ -696,6 +879,31 @@ inline bool IValue::isSameIdentity(IValue& rhs) {
         && this->payload.as_intrusive_ptr == rhs.payload.as_intrusive_ptr;
   }
 }
-
-
 } // namespace c10
+
+inline size_t at::ivalue::DictHash::operator()(
+    const c10::IValue& ivalue) const {
+  if (ivalue.isInt()) {
+    return std::hash<int>()(ivalue.toInt());
+  } else if (ivalue.isString()) {
+    return std::hash<std::string>()(ivalue.toStringRef());
+  } else if (ivalue.isDouble()) {
+    return std::hash<double>()(ivalue.toDouble());
+  } else {
+    throw std::runtime_error("Can't hash IValues with this tag");
+  }
+}
+
+inline bool at::ivalue::DictEqualTo::operator()(
+    const c10::IValue& lhs,
+    const c10::IValue& rhs) const {
+  if (lhs.isInt()) {
+    return lhs.toInt() == rhs.toInt();
+  } else if (lhs.isString()) {
+    return lhs.toStringRef() == rhs.toStringRef();
+  } else if (lhs.isDouble()) {
+    return lhs.toDouble() == rhs.toDouble();
+  } else {
+    throw std::runtime_error("Can't compare IValues with this tag");
+  }
+}

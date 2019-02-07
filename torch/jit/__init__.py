@@ -6,14 +6,15 @@ from torch.nn import Module, ModuleList, ParameterList, Parameter, Sequential
 from torch.jit.frontend import get_jit_ast, get_default_args
 import torch.backends.cudnn as cudnn
 import torch.jit.annotations
+import torch._jit_internal as _jit_internal
 from torch._six import raise_from, with_metaclass, get_function_from_type, \
     string_classes
-from .._jit_internal import createResolutionCallback, _compiled_weak_fns, \
-    _weak_script_methods, _weak_modules, _weak_types, COMPILED, \
-    COMPILATION_PENDING, _boolean_dispatched
+from torch._jit_internal import ignore
 from ..nn.modules.utils import _single, _pair, _triple, _quadruple, \
     _list_with_default
 import torch.testing
+
+import math
 from collections import defaultdict, OrderedDict, namedtuple
 import sys
 import warnings
@@ -28,6 +29,7 @@ import numbers
 import collections
 import re
 import inspect
+import pickle
 if sys.version_info[0] > 2:
     import pathlib
 
@@ -114,7 +116,9 @@ def load(f, map_location=None):
                 setattr(curr, name, ScriptModule())
             curr = getattr(curr, name)
         return curr
-
+    if isinstance(f, string_classes):
+        if not os.path.exists(f):
+            raise ValueError("The provided filename {} does not exist".format(f))
     if isinstance(map_location, string_classes):
         map_location = torch.device(map_location)
     elif not (map_location is None or
@@ -220,10 +224,10 @@ def _create_interpreter_name_lookup_fn(frames_up=1):
 
         for k, v in f_locals.items():
             if isinstance(v, torch.Tensor) and var is v:
-                return k
+                return k if k != 'self' else ''
         for k, v in f_globals.items():
             if isinstance(v, torch.Tensor) and var is v:
-                return k
+                return k if k != 'self' else ''
         return ''
     return _get_interpreter_name_for_var
 
@@ -653,7 +657,7 @@ class CompilationUnit(object):
 
     def define(self, lang, rcb=None, _frames_up=0):
         if not rcb:
-            rcb = createResolutionCallback(_frames_up + 1)
+            rcb = _jit_internal.createResolutionCallback(_frames_up + 1)
         self.module._define(lang, rcb, False)
 
     def __getattr__(self, attr):
@@ -663,18 +667,28 @@ class CompilationUnit(object):
 def _try_get_dispatched_fn(fn):
     if not callable(fn):
         return None
-    return _boolean_dispatched.get(fn)
+    return _jit_internal.boolean_dispatched.get(fn)
+
+
+def _try_get_overloaded_fn(fn):
+    if not hasattr(fn, '__self__') or not isinstance(fn.__self__, ScriptModule):
+        # Only allow overloads for bound methods
+        return None
+    overloads = fn.__self__._overloads.get(fn.__name__, None)
+    if overloads is None:
+        return None
+    return [getattr(fn.__self__, overload) for overload in overloads]
 
 
 def _try_compile_weak_script(fn):
-    entry = _compiled_weak_fns.get(fn)
+    entry = _jit_internal.compiled_weak_fns.get(fn)
     if entry is None:
         return None
-    if entry["status"] == COMPILATION_PENDING:
+    if entry["status"] == _jit_internal.COMPILATION_PENDING:
         compiled_fn = torch.jit.script(fn, True, 0, entry["rcb"])
         del entry["rcb"]
-        _compiled_weak_fns[fn]["compiled_fn"] = compiled_fn
-        entry["status"] = COMPILED
+        _jit_internal.compiled_weak_fns[fn]["compiled_fn"] = compiled_fn
+        entry["status"] = _jit_internal.COMPILED
         return compiled_fn
     else:
         return entry["compiled_fn"]
@@ -684,7 +698,7 @@ def script(fn, optimize=True, _frames_up=0, _rcb=None):
     if not _enabled:
         return fn
     if _rcb is None:
-        _rcb = createResolutionCallback(_frames_up + 1)
+        _rcb = _jit_internal.createResolutionCallback(_frames_up + 1)
     ast = get_jit_ast(fn, is_method=False)
     mod = ScriptModule()
     _jit_script_compile(mod, ast, _rcb, get_default_args(fn))
@@ -711,7 +725,7 @@ def script_method(fn, _rcb=None):
     # createResolutionCallback internally adds 1 to get us to the scope of this
     # function (the calling function). Adding 2 gets us to the proper surrounding scope.
     if _rcb is None:
-        _rcb = createResolutionCallback(frames_up=2)
+        _rcb = _jit_internal.createResolutionCallback(frames_up=2)
     ast = get_jit_ast(fn, is_method=True)
     return ScriptMethodStub(_rcb, ast, fn)
 
@@ -722,14 +736,22 @@ def _try_get_weak_module(mod):
     """
     if not isinstance(mod, Module):
         return None
-    return _weak_modules.get(mod)
+    return _jit_internal.weak_modules.get(mod)
+
+
+def _try_get_ignored_op(fn):
+    if not callable(fn):
+        return False
+    if hasattr(fn, '__func__'):
+        fn = fn.__func__
+    return fn in _jit_internal.ignored_fns
 
 
 def _is_weak_type(cls):
     """
     Check if a type has been annotated with `weak_module`
     """
-    return cls in _weak_types
+    return cls in _jit_internal.weak_types
 
 
 def batch(batch_size=1, optimize=True, _frames_up=0):
@@ -938,6 +960,7 @@ class ScriptMeta(type(torch._C.ScriptModule)):
         original_init = getattr(cls, '__init__', lambda self: None)
         super_constants = getattr(super(cls), '_constants_set', set())
         cls._constants_set = set(getattr(cls, '__constants__', ())).union(super_constants)
+        cls._overloads = dict(getattr(cls, '__overloads__', {}))
 
         @functools.wraps(original_init)
         def init_then_register(self, *args, **kwargs):
@@ -956,16 +979,16 @@ class ScriptMeta(type(torch._C.ScriptModule)):
 if _enabled:
     class ScriptModule(with_metaclass(ScriptMeta, torch._C.ScriptModule, Module)):
         r"""
-        The core data structure in Torch Script is the ``ScriptModule``. It is an
+        The core data structure in TorchScript is the ``ScriptModule``. It is an
         analogue of torch's nn.Module and represents an entire model as a tree of
         submodules. Like normal modules, each individual module in a ScriptModule can
         have submodules, parameters, and methods. In nn.Modules methods are implemented
         as Python functions, but in ScriptModules methods typically implemented as
-        *Torch Script* functions,  a statically-typed subset of Python that contains all
+        *TorchScript* functions,  a statically-typed subset of Python that contains all
         of PyTorch's built-in Tensor operations. This difference allows your
         ScriptModules code to run without the need for a Python interpreter.
 
-        ScriptModules and the Torch Script functions inside of them can be created in
+        ScriptModules and the TorchScript functions inside of them can be created in
         two ways:
 
         **Tracing:**
@@ -973,7 +996,7 @@ if _enabled:
             Using ``torch.jit.trace``, you can take an existing module or python
             function, provide example inputs, and we run the function, recording the
             operations performed on all the tensors. We turn the resulting recording
-            into a Torch Script method that is installed as the ``forward`` method of a
+            into a TorchScript method that is installed as the ``forward`` method of a
             ScriptModule. This module also contains any parameters that the original
             module had as well.
 
@@ -1021,11 +1044,11 @@ if _enabled:
 
         **Scripting:**
 
-            You can write Torch Script code directly using Python syntax. You do this
+            You can write TorchScript code directly using Python syntax. You do this
             using the ``torch.jit.script`` annotation (for functions) or
             ``torch.jit.script_method`` annotation (for methods) on subclasses of
             ScriptModule. With this annotation the body of the annotated function is
-            directly translated into Torch Script. Torch Script itself is a subset of
+            directly translated into TorchScript. TorchScript itself is a subset of
             the Python language, so not all features in python work, but we provide
             enough functionality to compute on tensors and do control-dependent
             operations.
@@ -1104,7 +1127,13 @@ if _enabled:
                 if isinstance(value, Module) and _is_weak_type(type(value)):
                     # Compile weak script module
                     value = _make_strong(value)
+                if attr == 'training':
+                    if self._has_buffer('training'):
+                        self.__dict__['training'] = value
+                        self._get_parameter('training').fill_(int(value))
+                        return
                 return super(ScriptModule, self).__setattr__(attr, value)
+
             if hasattr(self, attr):
                 raise RuntimeError("attempting to re-assign constant '{}'".format(attr))
             if isinstance(value, ModuleList):
@@ -1130,8 +1159,27 @@ if _enabled:
             #
             # createResolutionCallback internally adds 1 to get us to our frame, then
             # we add 1 to get to the proper surrounding scope.
-            rcb = createResolutionCallback(frames_up=1)
+            rcb = _jit_internal.createResolutionCallback(frames_up=1)
             self._define(lang, rcb, True)
+
+        def copy(self):
+            m = ScriptModule()
+
+            def module_lookup(names):
+                curr = m
+                for name in names:
+                    if not hasattr(curr, name):
+                        setattr(curr, name, ScriptModule())
+                    curr = getattr(curr, name)
+                return curr
+            self._copy_into(module_lookup, {}, [])
+            return m
+
+        def __getstate__(self):
+            raise pickle.PickleError(
+                "ScriptModules cannot be saved using torch.save. " +
+                "Mixed serialization of script and non-script modules is not supported. " +
+                "For purely script modules use my_script_module.save(<filename>) instead.")
 
     class WeakScriptModuleProxy(ScriptModule):
         def __init__(self, original, stubs):
@@ -1140,17 +1188,28 @@ if _enabled:
             self.__dict__['_initialized'] = False
             super(WeakScriptModuleProxy, self).__init__()
 
-            # Copy constants
             self.__dict__["_original"] = weakref.ref(original)
-            self.__dict__["_constants_set"] = set(getattr(original, "__constants__", []))
 
             # Copy Parameters / Modules / Buffers
             for name in dir(original):
                 item = getattr(original, name)
-                if isinstance(item, Parameter) or (isinstance(item, Module) and item is not self):
+                if item is None and name in original._parameters:
+                    # XXX: treat None value simply as module attributes instead of adding them to the parameter list
+                    # TODO: need to handle this more generally when non-tensor attributes added to module
+                    object.__setattr__(self, name, item)
+                elif isinstance(item, Parameter) or (isinstance(item, Module) and item is not self):
                     ScriptModule.__setattr__(self, name, item)
             for name in original._buffers:
-                self.register_buffer(name, original._buffers[name])
+                if original._buffers[name] is None:
+                    object.__setattr__(self, name, None)
+                else:
+                    self.register_buffer(name, original._buffers[name])
+
+            # Copy constants
+            self.__dict__["_constants_set"] = set(getattr(original, "__constants__", []))
+
+            # Copy overloads
+            self.__dict__["_overloads"] = dict(getattr(original, "__overloads__", {}))
 
             self.__dict__["_initialized"] = True
             _create_methods_from_stubs(self, stubs)
@@ -1181,9 +1240,10 @@ if _enabled:
                 raise AttributeError("Cannot set new attribute '{}' on "
                                      "weak script module once it has been "
                                      "created".format(attr))
-
 else:
-    ScriptModule = torch.nn.Module
+    class ScriptModule(torch.nn.Module):
+        def __init__(self, optimize=True):
+            super(ScriptModule, self).__init__()
 
 
 def _get_weak_stubs(cls):
@@ -1194,8 +1254,8 @@ def _get_weak_stubs(cls):
     stubs = []
     for name in dir(cls):
         func = get_function_from_type(cls, name)
-        if func in _weak_script_methods:
-            entry = _weak_script_methods[func]
+        if func in _jit_internal.weak_script_methods:
+            entry = _jit_internal.weak_script_methods[func]
             stub = script_method(entry["original_method"], entry["rcb"])
             stubs.append(stub)
     return stubs
@@ -1205,21 +1265,21 @@ def _make_strong(mod):
     """
     Converts a weak module into a subclass of ScriptModule
     """
-    if mod in _weak_modules:
-        return _weak_modules[mod]
+    if mod in _jit_internal.weak_modules:
+        return _jit_internal.weak_modules[mod]
 
-    stubs = _weak_types.get(type(mod))["method_stubs"]
+    stubs = _jit_internal.weak_types.get(type(mod))["method_stubs"]
 
     if stubs is None:
-        # Generate stubs and and store on _weak_types in case this type is
+        # Generate stubs and and store on weak_types in case this type is
         # used again
         stubs = _get_weak_stubs(type(mod))
-        _weak_types[type(mod)]["method_stubs"] = stubs
+        _jit_internal.weak_types[type(mod)]["method_stubs"] = stubs
 
     # Create proxy with stubs
     proxy = WeakScriptModuleProxy(mod, stubs)
 
-    _weak_modules[mod] = proxy
+    _jit_internal.weak_modules[mod] = proxy
 
     return proxy
 
@@ -1232,7 +1292,7 @@ def _get_methods(cls):
 
 _compiled_methods_whitelist = {
     'forward', 'register_buffer', 'register_parameter', 'add_module',
-    '_apply', 'apply', 'cuda', 'cpu', 'type', 'float', 'double', 'half',
+    '_apply', 'apply', 'cuda', 'cpu', 'to', 'type', 'float', 'double', 'half',
     'state_dict', 'load_state_dict', '_load_from_state_dict',
     '_named_members', 'parameters', 'named_parameters',
     'buffers', 'named_buffers', 'children', 'named_children', 'modules',
@@ -1243,7 +1303,7 @@ _compiled_methods_whitelist = {
 
 def _make_fail(name):
     def fail(self, *args, **kwargs):
-        raise RuntimeError(name + " is not supported on TracedModules")
+        raise RuntimeError(name + " is not supported on ScriptModules")
     return fail
 
 
@@ -1289,7 +1349,10 @@ class TracedModule(ScriptModule):
             raise ValueError("Modules that have hooks assigned can't be compiled")
 
         for name, submodule in orig._modules.items():
-            self._modules[name] = TracedModule(submodule, id_set, optimize=optimize)
+            if isinstance(submodule, ScriptModule) and not isinstance(submodule, TracedModule):
+                self._modules[name] = submodule.copy()
+            else:
+                self._modules[name] = TracedModule(submodule, id_set, optimize=optimize)
 
         self._freeze()
 
@@ -1364,22 +1427,7 @@ class _ConstSequential(_ConstModuleList):
 
 _builtin_table = None
 
-_modules_containing_builtins = (torch, torch.nn.functional, torch._C._nn)
-
-# These functions have been converted to weak script, so don't add them as
-# builtin aten ops. Instead, they will be compiled from the code in
-# torch.nn.functional when used.
-
-
-# TODO: delete _should_skip() and remove torch.nn.functional from builtins list
-# once everything in it has been converted to weak script
-def _should_skip(mod, name):
-    if mod is not torch.nn.functional:
-        return False
-    func = getattr(torch.nn.functional, name)
-    if func is None:
-        return False
-    return func in _compiled_weak_fns or func in _boolean_dispatched
+_modules_containing_builtins = (torch, torch._C._nn)
 
 
 def _unwrap_optional(x):
@@ -1397,7 +1445,7 @@ def _get_builtin_table():
     def register_all(mod):
         for name in dir(mod):
             v = getattr(mod, name)
-            if callable(v) and not _should_skip(mod, name):
+            if callable(v):
                 _builtin_table[id(v)] = "aten::" + name
     for mod in _modules_containing_builtins:
         register_all(mod)
@@ -1412,6 +1460,13 @@ def _get_builtin_table():
     _builtin_table[id(cudnn.is_acceptable)] = "aten::cudnn_is_acceptable"
     _builtin_table[id(torch._C._infer_size)] = "aten::_infer_size"
     _builtin_table[id(torch.nn.functional._no_grad_embedding_renorm_)] = "aten::_no_grad_embedding_renorm_"
+
+    _builtin_table[id(math.floor)] = "aten::floor"
+    _builtin_table[id(torch.nn.functional.interpolate)] = "aten::__interpolate"
+    _builtin_table[id(torch.nn.functional.upsample_nearest)] = "aten::__upsample_nearest"
+    _builtin_table[id(torch.nn.functional.upsample)] = "aten::__upsample"
+    _builtin_table[id(torch.nn.functional.upsample_bilinear)] = "aten::__upsample_bilinear"
+    _builtin_table[id(torch.nn.functional.assert_int_or_pair)] = "aten::_assert_int_or_pair"
 
     return _builtin_table
 

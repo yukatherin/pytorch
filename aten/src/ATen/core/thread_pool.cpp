@@ -1,5 +1,5 @@
-#include <ATen/core/thread_pool.h>
 #include <ATen/core/ivalue.h>
+#include <ATen/core/thread_pool.h>
 
 namespace c10 {
 
@@ -7,10 +7,10 @@ ThreadPool::ThreadPool(std::size_t pool_size, int numa_node_id)
     : threads_(pool_size),
       running_(true),
       complete_(true),
-      available_(pool_size),
-      total_(pool_size),
+      available_(threads_.size()),
+      total_(threads_.size()),
       numa_node_id_(numa_node_id) {
-  for (std::size_t i = 0; i < pool_size; ++i) {
+  for (std::size_t i = 0; i < threads_.size(); ++i) {
     threads_[i] = std::thread(std::bind(&ThreadPool::main_loop, this, i));
   }
 }
@@ -62,20 +62,6 @@ void ThreadPool::waitWorkComplete() {
   std::unique_lock<std::mutex> lock(mutex_);
   while (!complete_) {
     completed_.wait(lock);
-  }
-}
-
-void ThreadPool::workOnTasksUntilCompleted(
-    c10::intrusive_ptr<ivalue::Future> future) {
-  if (future->completed()) {
-    return;
-  }
-  std::condition_variable finished;
-  future->addCallback([&] { finished.notify_all(); });
-
-  std::unique_lock<std::mutex> future_lock(future->get_mutex());
-  while (!future->completed()) {
-    finished.wait(future_lock);
   }
 }
 
@@ -131,10 +117,17 @@ void ThreadPool::main_loop(std::size_t index) {
   } // while running_
 }
 
-ThreadPool& global_work_queue() {
-  static ThreadPool thread_pool(1);
+// constexpr initialization guaranteed to be before any static initialization
+std::atomic<int> num_threads{1};
+void setNumThreads(size_t v) {
+  if(-1  == num_threads.exchange(v)) {
+   throw std::runtime_error("Error: cannot set num threads after pool has started");
+  }
+}
 
-  return thread_pool;
+ThreadPool& global_work_queue() {
+   static ThreadPool thread_pool(num_threads.exchange(-1));
+   return thread_pool;
 }
 
 } // namespace c10

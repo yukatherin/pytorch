@@ -2,13 +2,11 @@
 #include "torch/csrc/jit/custom_operator.h"
 
 #include "torch/csrc/autograd/profiler.h"
-#include "torch/csrc/jit/interned_strings.h"
-
-#include "torch/csrc/utils/functional.h"
-#include "torch/csrc/variable_tensor_functions.h"
 #include "torch/csrc/autograd/generated/variable_factories.h"
 
 #include <ATen/ATen.h>
+#include <ATen/core/functional.h>
+#include <ATen/core/interned_strings.h>
 
 #include <algorithm>
 #include <array>
@@ -38,23 +36,20 @@ namespace torch { namespace jit {
 using autograd::Variable;
 using autograd::variable_list;
 using at::Scalar;
+using at::ScalarType;
 using at::Tensor;
 using at::TensorOptions;
 using at::DeviceGuard;
 
+using ::c10::fmap;
+using ::c10::filter;
+
 namespace {
 
-inline at::optional<at::Device> deviceForInputs(Stack & stack, size_t N) {
-  if(N == 0)
-    return c10::nullopt;
-  auto t = (stack.end() - N)->toTensor();
-  return c10::make_optional(t.device());
-}
-
 template<size_t N>
-std::array<bool, N> as_bool_array(at::ArrayRef<int64_t> vec) {
+std::array<bool, N> as_bool_array(const std::vector<bool>& vec) {
   std::array<bool, N> res;
-  JIT_ASSERT(vec.size() == N);
+  AT_ASSERT(vec.size() == N);
   std::copy(vec.begin(), vec.end(), res.begin());
   return res;
 }

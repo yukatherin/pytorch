@@ -4,7 +4,7 @@
 #include <ATen/NativeFunctions.h>
 #include <ATen/InitialTensorOptions.h>
 #include <ATen/SparseTensorUtils.h>
-#include "ATen/WrapDimUtilsMulti.h"
+#include <ATen/WrapDimUtilsMulti.h>
 
 #include <TH/THBlasUtils.h>
 
@@ -55,7 +55,7 @@ SparseTensor& zero_sparse_(SparseTensor& self) {
 // mul(SparseTensor, Scalar)
 // --------------------------------------------------------------------
 
-static Tensor scalar_tensor(Scalar s) {
+static Tensor wrapped_scalar_tensor(Scalar s) {
   auto tensor = scalar_to_tensor(s);
   tensor.unsafeGetTensorImpl()->set_wrapped_number(true);
   return tensor;
@@ -82,7 +82,7 @@ SparseTensor& mul_out_sparse_zerodim(SparseTensor& r, const SparseTensor& t, con
 }
 
 SparseTensor& mul_out_sparse_scalar(SparseTensor& r, const SparseTensor& t, Scalar value) {
-  return mul_out_sparse_zerodim(r, t, scalar_tensor(value));
+  return mul_out_sparse_zerodim(r, t, wrapped_scalar_tensor(value));
 }
 
 // --------------------------------------------------------------------
@@ -167,7 +167,7 @@ SparseTensor& div_out_sparse_zerodim(SparseTensor& r, const SparseTensor& t, con
 }
 
 SparseTensor& div_out_sparse_scalar(SparseTensor& r, const SparseTensor& t, Scalar value) {
-  return div_out_sparse_zerodim(r, t, scalar_tensor(value));
+  return div_out_sparse_zerodim(r, t, wrapped_scalar_tensor(value));
 }
 
 // --------------------------------------------------------------------
@@ -546,7 +546,7 @@ Tensor& s_addmm_out_sparse_dense_cpu(
   int64_t nnz        = sparse._nnz();
 
   if (nnz == 0) {
-    at::mul_out(r, t, r.type().scalarTensor(beta));
+    at::mul_out(r, t, at::scalar_tensor(beta, r.options()));
     return r;
   }
 
@@ -593,14 +593,16 @@ Tensor _sparse_addmm(
   Scalar beta,
   Scalar alpha
 ) {
-  return at::s_native_addmm(t, sparse, dense, beta, alpha);
+  Tensor b_t;
+  std::tie(b_t) = expand_size(t, {sparse.size(0), dense.size(1)}, "addmm");
+  return at::s_native_addmm(b_t, sparse, dense, beta, alpha);
 }
 
 Tensor _sparse_mm(
   const SparseTensor& sparse,
   const Tensor& dense
 ) {
-  Tensor t = at::empty({sparse.size(0), dense.size(1)}, dense.options());
+  Tensor t = at::zeros({}, dense.options());
   return at::_sparse_addmm(t, sparse, dense, 0, 1);
 }
 
@@ -837,11 +839,11 @@ Tensor _sparse_sum(const SparseTensor& input, ScalarType dtype) {
   return input.coalesce().values().sum(dtype);
 }
 
-Tensor _sparse_sum(const SparseTensor& input, IntList dims_to_sum, ScalarType dtype) {
+Tensor _sparse_sum(const SparseTensor& input, IntArrayRef dims_to_sum, ScalarType dtype) {
   return at::_sparse_sum(input.to(dtype), dims_to_sum);
 }
 
-Tensor _sparse_sum(const SparseTensor& input, IntList dims_to_sum) {
+Tensor _sparse_sum(const SparseTensor& input, IntArrayRef dims_to_sum) {
   AT_CHECK(input._nnz() > 0, "_sparse_sum: sparse tensor input._nnz() == 0, please call torch.sparse.sum(input) instead.")
 
   const int64_t input_dim = input.dim();
@@ -851,7 +853,7 @@ Tensor _sparse_sum(const SparseTensor& input, IntList dims_to_sum) {
 
   LongTensor indices = input._indices();
   Tensor values = input._values();
-  IntList sizes = input.sizes();
+  IntArrayRef sizes = input.sizes();
   const int64_t sparse_dim = input.sparse_dim();
   const int64_t dense_dim = input.dense_dim();
 
@@ -958,7 +960,7 @@ Tensor _sparse_sum(const SparseTensor& input, IntList dims_to_sum) {
 // - assign zero values to input gradients if cannot find matched indices at grad
 // - grad.values might have zeros
 // --------------------------------------------------------------------
-Tensor _sparse_sum_backward_cpu(const Tensor& grad_, const SparseTensor& input_, IntList dims_to_sum) {
+Tensor _sparse_sum_backward_cpu(const Tensor& grad_, const SparseTensor& input_, IntArrayRef dims_to_sum) {
   AT_CHECK(!grad_.is_cuda(), "_sparse_sum_backward_cpu: expected 'grad_' to be CPU tensor, but got CUDA tensor");
   AT_CHECK(!input_.is_cuda(), "_sparse_sum_backward_cpu: expected 'input_' to be CPU tensor, but got CUDA tensor");
 
@@ -970,7 +972,7 @@ Tensor _sparse_sum_backward_cpu(const Tensor& grad_, const SparseTensor& input_,
 
   LongTensor input_indices = input._indices();
   Tensor input_values = input._values();
-  IntList input_sizes = input.sizes();
+  IntArrayRef input_sizes = input.sizes();
   const int64_t input_sparse_dim = input.sparse_dim();
   const int64_t input_dense_dim = input.dense_dim();
   const int64_t input_nnz = input._nnz();
